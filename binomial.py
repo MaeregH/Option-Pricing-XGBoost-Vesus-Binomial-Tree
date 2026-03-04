@@ -1,31 +1,59 @@
 import numpy as np
+from typing import Literal
 
-# def binomial_american(
-#     S0: float,    #initial stock price
-#     K: float,     #strike price
-#     r:  float,    #annual risk-free rate
-#     sigma: float, 
-#     T: float,     #time to maturity
-#     N: int = 100,
-#     u = 1.1      #up-factor in binomial model
-#     d = 1/u      #recombine trees
-#     opttype: str = "C" #differentiate call 'C' or put 'P'
+def binomial_american(
+        S0: float,    #initial stock price
+        K: float,     #strike price
+        r:  float,    #annual risk-free rate
+        sigma: float, 
+        T: float,     #time to maturity
+        N: int = 100,
+        u = 1.1,     #up-factor in binomial model
+        d = 1/u,     #recombine trees
+        opttype: Literal['C', 'P'] = 'C' #differentiate call 'C' or put 'P'
 
-#  ) -> float:
+) -> float:
     
-#     #deal with expired options
-
-#     if T <= 0:
-#         if option_type == "call":
-#             return max(S0 - K, 0.0)
-#         else:
-#             return max(K - S0, 0.0)
+    if T <= 0:
+        if opttype == 'C':
+            return max(S0-K, 0.0)
+        else:
+            return max(K-S0, 0.0)
         
-#         change_t = T/N
-#         if change_t <= 0:
-#             change_t = 1e-6
+    dt = max(T/N, 1e-10)
+    u = np.exp(sigma * np.sqrt())
+    d = 1/u
+    q = (np.exp(r * dt) - d) /(u-d)
+
+    if not(0 <= q <= 1):
+        raise ValueError(f"Invalid risk-neutral probability: q={q}")
+    
+    disc = np.exp(-r * dt)
+    S = S0 * d ** np.arrange(N, -1, 1) * u ** np.arrange(0, N, N+1)
+
+    if opttype == 'C':
+        C = np.maximum(S-K, 0)
+    else:
+        C = np.maximum(K-S, 0)
+    
+    for i in range(N-1, -1, -1):
+        S = S0 * d ** np.arrange(i, -1, -1) * u ** np.arrange(0, i+1)
+        C[:i+1] = disc * (q*C[1:i + 2] + (1-q) * C[:i + 1])
+
+        if opttype == 'C':
+            exercise_value = np.maximum(S-K, 0)
+        else:
+            exercise_value = np.maximum(K-S, 0)
+
+        C[:i+1] = np.maximum(C[:i+1], exercise_value)
+
+    return C[0]
+
+
+
 
     
+
 def binomial_tree_fast(K, T, S0, r, N, u, d, opttype='C'):
     dt = T/N
     q = (np.exp(r*dt) - d) / (u-d)
@@ -39,3 +67,5 @@ def binomial_tree_fast(K, T, S0, r, N, u, d, opttype='C'):
             C[j] = disc * (q*C[j+1] + (1-q)*C[j])
 
     return C[0]
+
+
