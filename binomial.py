@@ -51,9 +51,6 @@ def binomial_american(
 
 
 
-
-    
-
 def binomial_tree_fast(K, T, S0, r, N, u, d, opttype='C'):
     dt = T/N
     q = (np.exp(r*dt) - d) / (u-d)
@@ -67,5 +64,51 @@ def binomial_tree_fast(K, T, S0, r, N, u, d, opttype='C'):
             C[j] = disc * (q*C[j+1] + (1-q)*C[j])
 
     return C[0]
+
+
+def trinomial_american(
+        
+        S0: float,
+        K: float,
+        r: float,
+        sigma: float,
+        T: float,
+        N: int = 100,
+        opttypetype: Literal['C', 'P'] = 'C'
+    ) -> float:
+
+    if T <= 0:
+        if opttype == 'C':
+            return max(S0-K, 0.0)
+        else:
+            return max(K-S0, 0.0)
+        
+    dt = max(T/N, 1e-10)
+    u = np.exp(sigma * np.sqrt())
+    d = 1/u
+    
+    pu = ((np.exp(r*dt/2) - np.exp(-sigma * np.sqrt(dt / 2))) / (np.exp(sigma * np.sqrt(dt / 2)) - np.exp(-sigma * np.sqrt(dt / 2)))) ** 2
+    pd = ((np.exp(sigma * np.sqrt(dt / 2)) - np.exp(r * dt / 2)) / (np.exp(sigma * np.sqrt(dt / 2)) - np.exp(-sigma * np.sqrt(dt / 2)))) ** 2
+
+    pm = 1 - pu - pd
+
+    if not(0<= pu <= 1 and 0 <= pd <= 1 and 0 <= pm <= 1):
+        raise ValueError(f"Invalid probabilities: pu={pu}m pm = {pu}, pd = {pd}")
+    
+    disc = np.exp(-r* dt)
+    option_tree = {}
+
+    for j in range(-N, N+1):
+        S = S0 * (u ** max(j, 0)) * (d ** max(-j, 0))
+
+        if opttype == 'C':
+            option_tree[(N, j)] = max(S - K, 0)
+        else:
+            option_tree[(N, j)] = max(K-S, 0)
+
+
+    for i in range(N -1, -1, -1):
+        for j in range(-i, i+1):
+            S = S0 * (u ** max(j,0)) * (d ** max(-j, 0))        
 
 
