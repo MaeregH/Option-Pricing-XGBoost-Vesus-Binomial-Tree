@@ -74,7 +74,7 @@ def trinomial_american(
         sigma: float,
         T: float,
         N: int = 100,
-        opttypetype: Literal['C', 'P'] = 'C'
+        opttype: Literal['C', 'P'] = 'C'
     ) -> float:
 
     if T <= 0:
@@ -109,6 +109,16 @@ def trinomial_american(
 
     for i in range(N -1, -1, -1):
         for j in range(-i, i+1):
-            S = S0 * (u ** max(j,0)) * (d ** max(-j, 0))        
+            S = S0 * (u ** max(j,0)) * (d ** max(-j, 0))  
+            continuation = disc * (
+                pu * option_tree.get((i+1, j+1), 0) + pm * option_tree.get((i+1, j), 0) + pd * option_tree.get((i+1, j-1), 0)
+            )
+            if opttype == 'C':
+                exercise = max(S-K, 0)
+            else:
+                exercise = max(K-S, 0)
+            option_tree[(i, j)] = max(continuation, exercise)
+
+    return option_tree[(0, 0)]
 
 
