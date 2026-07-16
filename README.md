@@ -10,22 +10,28 @@ wins, and where each one breaks.
 
 ## Headline Results
 
-Test set: 66,966 option quotes, 2022‑07‑01 → 2022‑12‑30 (chronological holdout,
-never seen during training).
+Test set: 64,747 option quotes, 2022‑07‑01 → 2022‑12‑30 (chronological
+holdout, never seen during training), after the liquidity filters described
+below.
 
 | Model         | MAE ($) | RMSE ($) |
 |---------------|--------:|---------:|
-| Lattice       |  1.5308 |   2.8696 |
-| XGB Baseline  |  5.3217 |   9.2325 |
-| XGB Augmented |  3.9411 |   8.5514 |
+| Lattice       |  1.7825 |   3.1391 |
+| XGB Baseline  |  4.6570 |   7.3253 |
+| XGB Augmented |  2.7976 |   4.7059 |
 
-MAPE is intentionally omitted: many test contracts are cheap, far-OTM options
-with mid-prices near $0, so small absolute errors translate into enormous,
-unstable percentage errors that don't reflect real pricing quality.
+MAPE is de-emphasized in this table: many test contracts are cheap, far-OTM
+options with mid-prices near $0, so small absolute errors can translate into
+large percentage errors that don't reflect real pricing quality. For
+reference, with liquidity filters applied MAPE is now Lattice 29.24%, XGB
+Baseline 153.31%, XGB Augmented 96.68% — still large, but far less extreme
+than before filtering (see Known Issues).
 
-**Note the ordering:** the raw lattice price alone beats both XGBoost variants
-on this test set. See [Known Issues](#known-issues) below — this is an open,
-actively-investigated regression, not a typo.
+**Note the ordering:** the raw lattice price alone still beats both XGBoost
+variants on this test set. Adding liquidity filters (below) closed most of
+the gap between XGB Augmented and the lattice, but did not close it — see
+[Known Issues](#known-issues) for the full before/after comparison; this
+remains an open, actively-investigated regression, not a typo.
 
 ---
 
@@ -45,9 +51,14 @@ actively-investigated regression, not a typo.
   [OptionsDX](https://www.optionsdx.com/). Cleaned to quote date, strike,
   expiration, bid/ask, volume, and implied vol (`data_cleaner.py`).
 - **Train/test split is chronological**, not random: train = quotes before
-  2022‑07‑01 (233,034 rows), test = quotes on/after 2022‑07‑01 (66,966 rows).
+  2022‑07‑01 (235,253 rows), test = quotes on/after 2022‑07‑01 (64,747 rows).
   This avoids look-ahead bias — the model never trains on data from after the
   date it's evaluated on.
+- **Liquidity filters** (`src/features.py`, applied post-melt, alongside the
+  existing bad-quote removal): `DTE > 2` days, `bid_ask_spread / mid < 0.5`,
+  `|log_moneyness| < 1.0`. Together these trim the ~1.42M-row melted universe
+  to ~1.16M rows (‑18.4%) before the 300k lattice sample is drawn — see Known
+  Issues for why this mattered.
 - **Lattice**: American binomial tree, `N=100` steps, priced on a fixed
   300,000-row sample (150k calls / 150k puts, sampled 2021‑01‑04 →
   2022‑12‑30) rather than the full cleaned dataset, for tractable runtime.
@@ -70,81 +81,109 @@ actively-investigated regression, not a typo.
   `src/features.py` now masks `|log_ret| >= 0.5` before computing the rolling
   window.
 - **IV ablation confirms the error is mostly a volatility-input problem, not
-  a pricing-model problem.** Re-pricing the same 279,649 valid-IV rows (93.2%
-  of the 300k sample) with market-implied vol instead of historical vol
-  roughly **halves** lattice error: hist-vol lattice MAE $4.3826 / RMSE
-  $9.0491 vs IV-lattice MAE $1.9544 / RMSE $4.1760, both measured against
+  a pricing-model problem.** Re-pricing 282,105 valid-IV rows (94.0% of the
+  filtered 300k sample) with market-implied vol instead of historical vol
+  more than **halves** lattice error: hist-vol lattice MAE $5.0273 / RMSE
+  $9.7318 vs IV-lattice MAE $2.1117 / RMSE $4.1770, both measured against
   market mid on the same rows. The lattice math is sound; the historical-vol
-  *estimate* feeding it is the weaker link. See `src/iv_ablation.py` and
+  *estimate* feeding it is the weaker link. This conclusion is unchanged
+  from before the liquidity filters were added — if anything the gap is
+  slightly wider now. See `src/iv_ablation.py` and
   `figures/iv_ablation_comparison.png`.
 - **Put-call parity holds almost exactly inside the lattice** (self-consistency
-  check, independent of market data): 96.33% of 31,127 matched call/put pairs
+  check, independent of market data): 98.93% of 35,144 matched call/put pairs
   fall within `[S-K, S-K·e^-rT]` using lattice prices, and the remaining
-  "violations" are ~1e-12 in magnitude — floating-point noise, not real
-  breaks. **Market mid-prices satisfy the same bound only 70.39% of the
-  time** (29.61% violations, avg magnitude $5.13, max $564.34) — expected,
+  1.07% "violations" are ~1e-12 in magnitude — floating-point noise, not real
+  breaks. **Market mid-prices satisfy the same bound only 76.82% of the
+  time** (23.18% violations, avg magnitude $1.05, max $564.31) — expected,
   since the theoretical bound assumes no dividend and NVDA pays one, and
-  because market quotes include bid/ask noise and the same outlier strikes
-  flagged below. See `src/parity_check.py` and
+  because market quotes include bid/ask noise. Both figures improved after
+  the liquidity filters (previously 96.33% lattice / 70.39% market, on
+  31,127 pairs) — the filters removed a chunk of the market-side violations
+  along with their average magnitude ($5.13 → $1.05). The single worst
+  violation ($564) still survives: it's the (strike=$470, T=3 days) pair
+  quoted on **2021‑07‑20 — NVDA's split date itself** (`mid_call=$280.63`
+  against `mid_put=$0.035` and an underlying of $186.13), i.e. stale/
+  unadjusted pricing during the split transition. It passes the
+  `|log_moneyness|` filter at `-0.93` — just inside the ±1.0 cutoff — so
+  none of the three filters catch it. See `src/parity_check.py` and
   `figures/put_call_parity_residuals.png`.
 - **Lattice sample scaled to 300,000 rows** (150k calls / 150k puts) for this
   round of analysis, up from a smaller pilot sample used during initial
   development — full re-run comparison numbers from that earlier, smaller
   run were not preserved, so only the current 300k-row results are reported
   here.
+- **Adding the missing liquidity filters (below) substantially narrowed, but
+  did not close, the XGB Augmented regression.** See Known Issues for the
+  full before/after comparison.
 
 ---
 
 ## Known Issues
 
-**XGB Augmented underperforms the raw lattice price it's supposed to
-improve on, and both XGBoost variants show a heavy error tail.**
+**XGB Augmented still underperforms the raw lattice price it's supposed to
+improve on — but liquidity filters closed most of the gap.**
 
-On the same 66,966-row test set:
+`src/features.py` was missing the liquidity filters this project was meant
+to enforce — only basic bad-quote removal (`mid > 0` and not
+`(volume == 0 and bid == 0)`) was implemented. Three filters were added
+post-melt, alongside that check: `DTE > 2` days, `bid_ask_spread / mid <
+0.5`, and `|log_moneyness| < 1.0`.
 
-| Model         | MAE ($) | RMSE ($) | RMSE / MAE |
-|---------------|--------:|---------:|-----------:|
-| Lattice       |  1.5308 |   2.8696 |       1.87 |
-| XGB Baseline  |  5.3217 |   9.2325 |       1.74 |
-| XGB Augmented |  3.9411 |   8.5514 |       2.17 |
+**Before vs after**, same modeling code, same 300k-row lattice sample size
+and `N=100`, different (filtered) input population:
 
-Augmented does beat baseline (adding `lattice_price` as a feature helps), but
-neither XGBoost model beats simply using the lattice price directly, and
-`RMSE ≫ MAE` for all three — a signature of a small number of very large
-misses dominating the squared-error metric rather than uniformly mediocre
-predictions.
+| Model         | MAE before | MAE after | RMSE before | RMSE after | MAPE before | MAPE after |
+|---------------|-----------:|----------:|-------------:|-----------:|-------------:|-----------:|
+| Lattice       |     1.5308 |    1.7825 |       2.8696 |     3.1391 |       35.46% |     29.24% |
+| XGB Baseline  |     5.3217 |    4.6570 |       9.2325 |     7.3253 |      346.78% |    153.31% |
+| XGB Augmented |     3.9411 |    2.7976 |       8.5514 |     4.7059 |      421.48% |     96.68% |
 
-Diagnostic findings (`src/` diagnostic run, read-only, no pipeline changes):
+XGB Augmented's RMSE nearly halved (8.55 → 4.71) and its MAPE dropped from
+421% to 97%. XGB Baseline improved similarly. The lattice's own MAE/RMSE
+ticked up slightly — the filtered population removed a lot of easy,
+near-worthless far-OTM contracts the lattice priced trivially well, so the
+remaining population is, in dollar terms, a harder mix — but the lattice's
+MAPE still improved (35.46% → 29.24%), consistent with the filters removing
+noisy small-denominator rows rather than making pricing genuinely worse.
 
-- The worst 20 test-set errors (abs error $167–$214) are **all deep-ITM
-  puts struck at $600**, against an underlying trading around $112–$146 —
-  i.e. `log_moneyness` far beyond ±1.0. $600 was roughly NVDA's price level
-  *before* the 2021‑07‑20 4-for-1 split; these look like legacy/thin strikes
-  that shouldn't dominate a liquid-quotes sample.
-- Of the worst 1% of test errors (670 rows), **91.9% are ITM** and **49.0%
-  have >180 days to expiry** — long-dated, deep-ITM, likely-illiquid
-  contracts are the dominant failure mode.
-- The liquidity filters this project is meant to enforce do not appear to be
-  fully applied in `src/features.py` — only a basic bad-quote removal
-  (`mid > 0` and not `(volume == 0 and bid == 0)`) is implemented, with no
-  explicit DTE, `|log_moneyness|`, or spread/mid cutoff. On the current
-  300k-row sample: min DTE = 1.0 day, max `|log_moneyness|` = 3.65, max
-  `bid_ask_spread / mid` = 2.0, with 8,349 rows at DTE < 2, 27,776 rows at
-  `|log_moneyness| > 1.0`, and 30,530 rows at `spread/mid > 0.5`.
+**Verified fixed:** the diagnostic was re-run against the filtered 300k-row
+sample. The specific artifact — deep-ITM puts at legacy pre-split $600
+strikes — is gone, not just reduced:
 
-**Leading theories** (not yet confirmed):
+- Min DTE: 1.0 → **3.0** days (filter is `T > 2/365`, strictly, so DTE ≥ 3
+  survives, not DTE ≥ 2 as the code comment says).
+- Max `|log_moneyness|`: 3.65 → **1.00** (filter boundary, as expected).
+- Max `bid_ask_spread / mid`: 2.0 → **0.50** (3 rows sit exactly at the
+  0.50 boundary — the filter divides by `mid + 1e-6` to avoid a div-by-zero,
+  so a handful of rows land a hair under the filter's threshold but exactly
+  at 0.50 when recomputed without the epsilon; this is floating-point
+  boundary noise, not a filter failure).
+- Worst single test-set error dropped from $214.27 (a $600-strike put) to
+  **$115.27** (a 3-day, near-the-money put) — no $600-strike names appear
+  anywhere in the new worst-20 list.
 
-1. The unfiltered deep-ITM/long-dated/wide-spread outliers above are getting
-   into training and disproportionately driving squared-error loss, pulling
-   the model away from fitting the bulk of liquid, near-the-money contracts.
+**Not yet fixed:** the underlying ITM/long-dated tail bias persists at
+roughly the same *proportions* even with the legacy-strike artifact gone.
+Of the worst 1% of test errors (648 rows, down from 670): **91.5% are ITM**
+and **48.1% have >180 days to expiry** — nearly identical to the pre-filter
+91.9% / 49.0%. So filtering fixed one specific data artifact, but there's a
+second, more structural pattern — XGBoost (with or without the lattice
+feature) still struggles disproportionately on long-dated, deep-ITM
+contracts — that these filters don't address.
+
+**Leading theories** for the remaining gap (not yet confirmed):
+
+1. Long-dated deep-ITM contracts, even legitimate ones, are a small and
+   arguably still-noisy slice of the training distribution (thin volume,
+   wide spreads relative to a big intrinsic value) — XGBoost may need more
+   ITM/long-dated representation, feature engineering (e.g. intrinsic value
+   as an explicit feature), or a separate model for that regime.
 2. `src/xgb_model.py` currently trains both models with
    `early_stopping_rounds=30` against `eval_set=[(X_test, y_test)]` — i.e.
    the test set itself picks the best boosting round. This isn't full label
    leakage, but it is a form of test-set-informed model selection worth
    revisiting.
-3. Whatever regression appeared "at scale" may simply be the outlier count
-   growing in step with the 300k-row sample size, rather than a scale effect
-   in the modeling approach itself.
 
 This is being tracked as a separate, ongoing investigation — `src/xgb_model.py`
 was intentionally not modified in this pass.

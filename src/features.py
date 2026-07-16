@@ -97,6 +97,21 @@ def load_features(path='nvda_cleaned_2021_2022.csv') -> pd.DataFrame:
     result = pd.concat([call_df, put_df], ignore_index=True)
     result['r'] = R
 
+    # Post-melt liquidity filters
+    print(f"[features] Rows before liquidity filters: {len(result):,}")
+
+    n0 = len(result)
+    result = result[result['T'] > 2 / 365]
+    print(f"[features] DTE >= 2 filter: {n0:,} -> {len(result):,}")
+
+    n0 = len(result)
+    result = result[result['bid_ask_spread'] / (result['mid'] + 1e-6) < 0.5]
+    print(f"[features] spread/mid < 0.5 filter: {n0:,} -> {len(result):,}")
+
+    n0 = len(result)
+    result = result[result['log_moneyness'].abs() < 1.0]
+    print(f"[features] |log_moneyness| < 1.0 filter: {n0:,} -> {len(result):,}")
+
     final_cols = [
         'quote_date', 'underlying', 'strike', 'T', 'r', 'hist_vol',
         'log_moneyness', 'opttype_encoded', 'bid_ask_spread', 'volume', 'iv', 'mid',
