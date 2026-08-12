@@ -39,24 +39,36 @@ if __name__ == "__main__":
     df = df.dropna(subset=['lattice_price', 'mid'])
     print(f"[xgb] Clean rows: {len(df)}")
 
-    split_date = pd.Timestamp('2022-07-01')
-    train = df[df['quote_date'] < split_date]
-    test  = df[df['quote_date'] >= split_date]
-    print(f"[xgb] Train: {len(train)}  Test: {len(test)}")
+    # Forward-chaining split: validation is the single month immediately
+    # before test, so early stopping sees data from the same regime it will
+    # be evaluated near — not a random or distant-past validation slice.
+    # eval_set was previously the test set itself, letting early stopping
+    # pick the best boosting round using test-set labels (leakage); a first
+    # fix (a 15%-of-training date carve-out, ending 2022-04-04) removed the
+    # leakage but cut early stopping off from the most test-adjacent data,
+    # which controlled experiments showed was the dominant effect (RMSE
+    # 27.60 at the 15% cut vs 5.00 here) — not validation-set size itself.
+    TRAIN_END  = pd.Timestamp('2022-06-01')  # train: everything before this
+    TEST_START = pd.Timestamp('2022-07-01')  # test: everything from this on; val fills the gap between
 
-    if len(test) == 0:
-        print("[xgb] WARNING: no test rows after 2022-07-01 — widening split to 2022-01-01")
-        split_date = pd.Timestamp('2022-01-01')
-        train = df[df['quote_date'] < split_date]
-        test  = df[df['quote_date'] >= split_date]
-        print(f"[xgb] Train: {len(train)}  Test: {len(test)}")
+    # Sorted by date: XGBoost's subsample<1.0 samples by row position, so an
+    # unsorted (arbitrary) row order changes which rows get subsampled each
+    # boosting round even though the underlying data is identical.
+    df = df.sort_values('quote_date')
+    train = df[df['quote_date'] < TRAIN_END]
+    val   = df[(df['quote_date'] >= TRAIN_END) & (df['quote_date'] < TEST_START)]
+    test  = df[df['quote_date'] >= TEST_START]
+    print(f"[xgb] Train: {len(train)}  Val: {len(val)}  Test: {len(test)}")
 
     y_train = train['mid'].values
+    y_val   = val['mid'].values
     y_test  = test['mid'].values
 
     X_train_base = train[BASE_FEATURES].values
+    X_val_base   = val[BASE_FEATURES].values
     X_test_base  = test[BASE_FEATURES].values
     X_train_aug  = train[AUG_FEATURES].values
+    X_val_aug    = val[AUG_FEATURES].values
     X_test_aug   = test[AUG_FEATURES].values
 
     common_hp = dict(
@@ -70,17 +82,19 @@ if __name__ == "__main__":
     xgb_baseline = XGBRegressor(**common_hp)
     xgb_baseline.fit(
         X_train_base, y_train,
-        eval_set=[(X_test_base, y_test)],
+        eval_set=[(X_val_base, y_val)],
         verbose=False,
     )
+    print(f"[xgb] Baseline best_iteration: {xgb_baseline.best_iteration} / {common_hp['n_estimators']}")
 
     print("[xgb] Training augmented (with lattice) ...")
     xgb_augmented = XGBRegressor(**common_hp)
     xgb_augmented.fit(
         X_train_aug, y_train,
-        eval_set=[(X_test_aug, y_test)],
+        eval_set=[(X_val_aug, y_val)],
         verbose=False,
     )
+    print(f"[xgb] Augmented best_iteration: {xgb_augmented.best_iteration} / {common_hp['n_estimators']}")
 
     lat_pred  = test['lattice_price'].values
     base_pred = xgb_baseline.predict(X_test_base)
